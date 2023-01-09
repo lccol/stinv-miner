@@ -36,6 +36,12 @@ def parse():
     parser.add_argument('--reproj-mode', type=str, dest='reproj_mode', default='future', help='Temporal reprojection mode. Must be either "future" or "past". Default is "future".')
     parser.add_argument('-o', type=str, help='Output path for the extracted patterns on HDFS.')
     parser.add_argument('--absolute', default=False, action='store_true', help='Set absolute mode, i.e., uses station IDs instead of discretized spatial distance. Default is False.')
+    
+    # for scalability tests
+    parser.add_argument('--start-date', type=str, dest='start_date', default=None, help='Start date used to filter event. Default is None (i.e., no filter on starting date is applied)')
+    parser.add_argument('--end-date', type=str, dest='end_date', default=None, help='End date used to filter event. Default is None (i.e., no filter on end date is applied)')
+    parser.add_argument('--exec-time', type=str, dest='exec_time', default=None, help='Path in which to save the execution time (txt file). If None, execution time is not saved in a file.')
+    parser.add_argument('--n-events', type=int, dest='n_events', default=None, help='Number of events to consider for scalability tests. It takes the first N events sorted by time.')
     return parser.parse_args()
 
 def haversineDistance(aLat, aLng, bLat, bLng):
@@ -85,10 +91,12 @@ def spatial_corr_func_from_neigh_list(e1: Row,
             dist > 0:
             return -1
         elif dist == 0 and \
-            not ((evt1 in {'empty', 'almost_empty', 'decrease'} and \
+            ((evt1 in {'empty', 'almost_empty', 'decrease'} and \
             evt2 in {'empty', 'almost_empty', 'decrease'}) or \
                 (evt1 in {'full', 'almost_full', 'increase'} and \
             evt2 in {'full', 'almost_full', 'increase'})):
+            return 0
+        else:
             return -1
                 
     return math.ceil(dist / spat_thr)
@@ -318,7 +326,17 @@ if __name__ == '__main__':
     REPROJ_MODE = args.reproj_mode
     OUTPUT_PATH = args.o
     ABSOLUTE_MODE = args.absolute
+    
+    # PARAMS FOR SCALABILITY TESTS
+    START_DATE = args.start_date
+    END_DATE = args.end_date
+    TIME_EXPORT_PATH = args.exec_time
+    N_EVENTS = args.n_events
     # END INPUT PROGRAM ARGUMENTS
+    
+    time_report = Path(TIME_EXPORT_PATH)
+    if not time_report.parent.is_dir():
+        time_report.parent.mkdir(parents=True)
     
     spark = SparkSession.builder \
                     .appName(f'{TAG}') \
@@ -332,6 +350,7 @@ if __name__ == '__main__':
     station_path = basepath + 'station.csv'
     trip_path = basepath + 'trip.csv'
     
+    time_start = time.time()
     
     
     event_to_generate = set(EVENT_TYPES.split(','))
@@ -372,6 +391,15 @@ if __name__ == '__main__':
     status_df = status_df \
                 .withColumn('time',
                             F.to_timestamp(F.regexp_replace('time', '-', '/'), 'yyyy/MM/dd HH:mm:ss'))
+    
+    if (not START_DATE is None) and (not END_DATE is None):
+        status_df = status_df.filter((status_df.time >= pd.Timestamp(START_DATE)) & \
+                                     (status_df.time <= pd.Timestamp(END_DATE)))
+    elif not START_DATE is None:
+        status_df = status_df.filter(status_df.time >= pd.Timestamp(START_DATE))
+    elif not END_DATE is None:
+        status_df = status_df.filter(status_df.time <= pd.Timestamp(END_DATE))
+    
 
     station_df = spark.read.csv(station_path,
                                 header=True,
@@ -391,7 +419,10 @@ if __name__ == '__main__':
     
     joined_df.printSchema()
     filtered_df = joined_df \
-                    .filter('(bikes_available + docks_available) <= (dock_count + 5) AND (bikes_available + docks_available) >= (dock_count - 5)')
+                    .filter('(bikes_available + docks_available) <= (dock_count + 5) AND (bikes_available + docks_available) >= (dock_count - 5)') \
+                    .cache()
+    
+    time_cleaned = time.time()
 
     print(f'before: {joined_df.count()}')
     print(f'after: {filtered_df.count()}')
@@ -401,8 +432,21 @@ if __name__ == '__main__':
                                         event_set=event_to_generate,
                                         almost_threshold=2,
                                         almost_overlap_check=True) \
-                .toDF().persist(ps.StorageLevel.MEMORY_AND_DISK)
+                .toDF()#.persist(ps.StorageLevel.MEMORY_AND_DISK)
+    
+    if not N_EVENTS is None:
+        event_df = event_df.orderBy('timestamp') \
+                            .limit(N_EVENTS) \
+                            .persist(ps.StorageLevel.MEMORY_AND_DISK)
+    else:
+        event_df = event_df.persist(ps.StorageLevel.MEMORY_AND_DISK)
+        
+    if not TIME_EXPORT_PATH is None:
+        print(f'Number of events provided as input parameter: {N_EVENTS}')
+        print(f'Size of event_df: {event_df.count()}')
 
+    time_event_df = time.time()
+    
     if not ABSOLUTE_MODE:
         print('relative mode')
         sg = SequenceGenerator(time_thr=datetime.timedelta(minutes=TEMPORAL_THRESHOLD),
@@ -427,6 +471,10 @@ if __name__ == '__main__':
                                ignore_event_type=ignore_set,
                                mode=REPROJ_MODE)
     event_df_final = sg.generate(event_df).persist(ps.StorageLevel.MEMORY_AND_DISK)
+    if not TIME_EXPORT_PATH is None:
+        event_df_final_count = event_df_final.count()
+        time_seq_gen = time.time()
+        print(f'Event df final size: {event_df_final_count}')
         
     se = SequenceExtractor(min_supp=MINSUPP, max_pattern_len=MAX_PATT_LEN, maxLocalProjDBSize=10_000_000)
     patterns = se.extract(event_df_final)
@@ -435,11 +483,45 @@ if __name__ == '__main__':
         s0t0_filter = spark.udf.register('s0t0filter', lambda it: any('S0_T0' in x for x in it[0]), 'boolean')
 
         ordered_patterns = patterns.orderBy('relFreq', ascending=False) \
-                                    .filter('s0t0filter(sequence)')
+                                    .filter('s0t0filter(sequence)') \
+                                    .persist(ps.StorageLevel.MEMORY_AND_DISK)
     else:
-        ordered_patterns = patterns.orderBy('relFreq', ascending=False)
+        ordered_patterns = patterns.orderBy('relFreq', ascending=False) \
+                                    .persist(ps.StorageLevel.MEMORY_AND_DISK)
+        
+    if not TIME_EXPORT_PATH is None:
+        ordered_patterns_count = ordered_patterns.count()
+        time_extracted = time.time()
     
     ordered_patterns.withColumn('sequence', ordered_patterns.sequence.cast('string')) \
                     .write.csv(OUTPUT_PATH)
+    time_write = time.time()
     
     sc.stop()
+    
+    if not TIME_EXPORT_PATH is None:
+        res_dict = {}
+        res_dict['entry'] = []
+        res_dict['time'] = []
+
+        res_dict['entry'].append('start')
+        res_dict['time'].append(time_start)
+
+        res_dict['entry'].append('cleaned')
+        res_dict['time'].append(time_cleaned)
+
+        res_dict['entry'].append('event_df_generation')
+        res_dict['time'].append(time_event_df)
+
+        res_dict['entry'].append('seq_generation')
+        res_dict['time'].append(time_seq_gen)
+
+        res_dict['entry'].append('extracted')
+        res_dict['time'].append(time_extracted)
+
+        res_dict['entry'].append('write')
+        res_dict['time'].append(time_write)
+
+        res_df = pd.DataFrame(res_dict)
+
+        res_df.to_csv(time_report, index=False)
