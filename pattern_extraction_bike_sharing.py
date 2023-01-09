@@ -76,30 +76,33 @@ def spatial_corr_func_from_neigh_list(e1: Row,
                               spat_thr: float,
                               neigh_dict: Broadcast,
                               check_reverse_events: bool=False) -> int:
+    full_events = {'full', 'almost_full', 'increase'}
+    empty_events = {'empty', 'almost_empty', 'decrease'}
+    
     id1, id2 = e1['station'], e2['station']
     evt1, evt2 = e1['event_type'], e2['event_type']
     if not id2 in neigh_dict.value[id1]:
         return -1
     dist = haversineDistance(e1['lat'], e1['long'], e2['lat'], e2['long'])
+    discretized_dist = math.ceil(dist / spat_thr)
+    
     if check_reverse_events:
-        if evt1 in {'full', 'almost_full', 'increase'} and \
-            not evt2 in {'decrease', 'empty', 'almost_empty'} and \
+        if evt1 in full_events and \
+            evt2 in empty_events and \
             dist > 0:
-            return -1
-        elif evt1 in {'empty', 'almost_empty', 'decrease'} and \
-            not evt2 in {'increase', 'full', 'almost_full'} and \
+            return discretized_dist
+        elif evt1 in empty_events and \
+            evt2 in full_events and \
             dist > 0:
-            return -1
+            return discretized_dist
         elif dist == 0 and \
-            ((evt1 in {'empty', 'almost_empty', 'decrease'} and \
-            evt2 in {'empty', 'almost_empty', 'decrease'}) or \
-                (evt1 in {'full', 'almost_full', 'increase'} and \
-            evt2 in {'full', 'almost_full', 'increase'})):
+            ((evt1 in empty_events and evt2 in empty_events) or \
+                (evt1 in full_events and evt2 in full_events)):
             return 0
         else:
             return -1
-                
-    return math.ceil(dist / spat_thr)
+    else:       
+        return discretized_dist
 
 def timeslot_station_repartition(df: DataFrame, minutes: int) -> DataFrame:
     rdd = df.rdd
