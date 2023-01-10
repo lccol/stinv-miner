@@ -81,8 +81,9 @@ def spatial_corr_func_from_neigh_list(e1: Row,
     
     id1, id2 = e1['station'], e2['station']
     evt1, evt2 = e1['event_type'], e2['event_type']
-    if not id2 in neigh_dict.value[id1]:
+    if (not id2 in neigh_dict.value[id1]) and id1 != id2:
         return -1
+    assert id1 == id2 or id2 in neigh_dict.value[id1]
     dist = haversineDistance(e1['lat'], e1['long'], e2['lat'], e2['long'])
     discretized_dist = math.ceil(dist / spat_thr)
     
