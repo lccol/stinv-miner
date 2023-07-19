@@ -1,5 +1,5 @@
 # STInv-Miner
-Official code repository for the STInv-Miner algorithm.
+Official code repository for the STInv-Miner algorithm. This work was published at SIGSPATIAL'22 conference.
 
 The code repository is organized as follows:
 - `obtain_zips.py`: script used to retrieve zip codes for New York City, Boston and Los Angeles;
@@ -13,3 +13,23 @@ The code repository is organized as follows:
 
 The code was tested with Python 3.7.9.
 All packages are specified in `requirements.txt`.
+
+# Citation
+```
+@inproceedings{10.1145/3557915.3560998,
+  author = {Colomba, Luca and Cagliero, Luca and Garza, Paolo},
+  title = {Mining Spatiotemporally Invariant Patterns},
+  year = {2022},
+  isbn = {9781450395298},
+  publisher = {Association for Computing Machinery},
+  address = {New York, NY, USA},
+  url = {https://doi.org/10.1145/3557915.3560998},
+  doi = {10.1145/3557915.3560998},
+  booktitle = {Proceedings of the 30th International Conference on Advances in Geographic Information Systems},
+  articleno = {63},
+  numpages = {4},
+  keywords = {pattern mining, data mining, spatiotemporal data},
+  location = {Seattle, Washington},
+  series = {SIGSPATIAL '22}
+}
+```
